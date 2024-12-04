@@ -1,111 +1,104 @@
 import streamlit as st
-import pdfplumber
-import sqlite3
-import random
-import os
+from PyPDF2 import PdfReader
+import openai
+import pandas as pd
 
-# Database functions
-def connect_db():
-    conn = sqlite3.connect('questions.db')
-    return conn
+# Configure OpenAI API (replace with your API key)
+openai.api_key = "YOUR_OPENAI_API_KEY"
 
-def create_table(conn):
-    conn.execute('''CREATE TABLE IF NOT EXISTS QUESTIONS
-           (ID INTEGER PRIMARY KEY AUTOINCREMENT,
-           QUESTION TEXT NOT NULL,
-           ANSWER TEXT NOT NULL,
-           SUBJECT TEXT NOT NULL);''')
-    conn.commit()
+# App Title
+st.title("Personalized Learning and Exam Prep App")
 
-def insert_question(conn, question, answer, subject):
-    conn.execute("INSERT INTO QUESTIONS (QUESTION, ANSWER, SUBJECT) VALUES (?, ?, ?)", 
-                 (question, answer, subject))
-    conn.commit()
+# Sidebar for Navigation
+st.sidebar.title("Navigation")
+options = st.sidebar.radio("Go to:", ["Upload PDF", "Take Quiz", "Leaderboard"])
 
-def fetch_questions_by_subject(conn, subject):
-    cursor = conn.execute("SELECT QUESTION, ANSWER FROM QUESTIONS WHERE SUBJECT=?", (subject,))
-    return cursor.fetchall()
+# In-memory storage for quizzes
+if "quizzes" not in st.session_state:
+    st.session_state["quizzes"] = {}
+if "leaderboard" not in st.session_state:
+    st.session_state["leaderboard"] = []
 
-# PDF parsing function using pdfplumber
-def extract_questions_answers(pdf_file, subject):
-    with pdfplumber.open(pdf_file) as pdf:
-        text = ''
-        for page in pdf.pages:
-            text += page.extract_text()
-    
+# Function to extract questions from PDF
+def extract_questions_from_pdf(pdf_file):
+    reader = PdfReader(pdf_file)
     questions = []
-    
-    lines = text.split('\n')
-    for i, line in enumerate(lines):
-        if line.strip().lower().startswith('q'):
-            question = line.strip()
-            answer = lines[i + 1].strip() if i + 1 < len(lines) else ''
-            questions.append((question, answer))
-    
+    for page in reader.pages:
+        text = page.extract_text()
+        lines = text.split('\n')
+        for line in lines:
+            if "Question Label" in line:  # Match quiz question lines
+                question = {"question": line, "options": []}
+                questions.append(question)
+            elif "Options :" in line or "Options :" in text:
+                options = lines[lines.index(line) + 1:lines.index(line) + 5]
+                question["options"] = [opt.strip() for opt in options]
     return questions
 
-# Main Streamlit app
-def main():
-    st.title("Exam Preparation: Previous Year Papers")
-    
-    # Connect to the database
-    conn = connect_db()
-    create_table(conn)
-    
-    # Upload PDF
-    uploaded_file = st.file_uploader("Upload a PDF file with previous year exam papers", type="pdf")
-    subject = st.text_input("Enter the subject name for this PDF")
-    
-    if uploaded_file is not None and subject:
-        # Extract questions and answers from the uploaded PDF
-        questions = extract_questions_answers(uploaded_file, subject)
-        
-        if questions:
-            st.write(f"PDF successfully processed. {len(questions)} questions extracted.")
-            
-            # Insert questions into the database
-            for question, answer in questions:
-                insert_question(conn, question, answer, subject)
-            
-            st.write("Questions have been saved to the database. You can now take a test.")
-            
-            # Allow the user to take a test from the saved questions
-            if st.button("Start Test"):
-                start_test(conn, subject)
-                
-        else:
-            st.write("No questions found in the uploaded PDF.")
-    
-    # Option to select subject and start test
-    st.write("Or choose a subject to start a test:")
-    subjects = [row[0] for row in conn.execute("SELECT DISTINCT SUBJECT FROM QUESTIONS").fetchall()]
-    
-    if subjects:
-        selected_subject = st.selectbox("Select Subject", subjects)
-        if selected_subject:
-            if st.button("Start Test"):
-                start_test(conn, selected_subject)
-
-def start_test(conn, subject):
-    questions = fetch_questions_by_subject(conn, subject)
-    random.shuffle(questions)
-    
-    score = 0
-    for i, (question, correct_answer) in enumerate(questions):
-        st.write(f"Q{i + 1}: {question}")
-        
-        user_answer = st.text_input(f"Your Answer for Q{i + 1}", key=i)
-        
-        if st.button(f"Submit Answer for Q{i + 1}", key=f"btn_{i}"):
-            if user_answer.lower() == correct_answer.lower():
-                st.write("Correct!")
-                score += 1
+# Upload PDF Section
+if options == "Upload PDF":
+    st.header("Upload Your Quiz PDF")
+    uploaded_file = st.file_uploader("Upload your PDF file here:", type=["pdf"])
+    if uploaded_file is not None:
+        with st.spinner("Processing your PDF..."):
+            quiz = extract_questions_from_pdf(uploaded_file)
+            if quiz:
+                st.success("Quiz extracted successfully!")
+                st.session_state["quizzes"] = quiz
+                st.write("Preview of extracted questions:")
+                for q in quiz[:3]:  # Preview first 3 questions
+                    st.write(q["question"])
+                    st.write(q["options"])
             else:
-                st.write(f"Wrong! The correct answer is: {correct_answer}")
-            
-            st.write("---")
-    
-    st.write(f"Your final score: {score}/{len(questions)}")
+                st.error("No questions found in the uploaded PDF.")
 
-if __name__ == "__main__":
-    main()
+# Take Quiz Section
+elif options == "Take Quiz":
+    if not st.session_state["quizzes"]:
+        st.warning("Please upload a PDF with quiz questions first.")
+    else:
+        st.header("Take Quiz")
+        score = 0
+        total = len(st.session_state["quizzes"])
+        for idx, q in enumerate(st.session_state["quizzes"]):
+            st.subheader(f"Question {idx + 1}: {q['question']}")
+            user_answer = st.radio(
+                "Choose an option:",
+                q["options"],
+                key=f"q{idx}"
+            )
+            correct_answer = q["options"][0]  # Assuming first option is correct
+            if st.button(f"Submit Answer {idx + 1}", key=f"submit_{idx}"):
+                if user_answer == correct_answer:
+                    st.success("Correct!")
+                    score += 1
+                else:
+                    st.error(f"Incorrect! Correct answer: {correct_answer}")
+
+        st.write(f"Your Score: {score}/{total}")
+        st.session_state["leaderboard"].append({"user": "You", "score": score})
+
+# Leaderboard Section
+elif options == "Leaderboard":
+    st.header("Leaderboard")
+    if st.session_state["leaderboard"]:
+        leaderboard = pd.DataFrame(st.session_state["leaderboard"])
+        leaderboard = leaderboard.sort_values(by="score", ascending=False)
+        st.table(leaderboard)
+    else:
+        st.info("No scores yet. Take a quiz to get started!")
+
+# Advanced Capabilities (Optional AI-Generated Questions)
+st.sidebar.title("Advanced Features")
+if st.sidebar.checkbox("Generate AI Questions"):
+    st.header("AI-Generated Questions")
+    user_text = st.text_area("Paste text or upload a document for AI-generated questions:")
+    if st.button("Generate Questions"):
+        with st.spinner("Generating questions..."):
+            response = openai.Completion.create(
+                engine="text-davinci-003",
+                prompt=f"Generate multiple-choice questions based on this text: {user_text}",
+                max_tokens=300
+            )
+            st.write(response.choices[0].text)
+
