@@ -1,3 +1,4 @@
-streamlit
-pdfplumber
-sqlite3
+streamlit==1.25.0  # Latest Streamlit version (update if necessary)
+PyPDF2==3.0.1      # For extracting text from PDFs
+openai==0.28.0     # OpenAI API for AI-generated questions
+pandas==2.1.1      # For leaderboard and data handling
